@@ -2,7 +2,7 @@
 
 Make the Slack desktop app follow your [Omarchy](https://omarchy.org) theme, and keep following it every time you switch themes. Slack recolors live, no restart needed.
 
-Inspired by [omarchy-telegram-theme](https://github.com/gmickel/omarchy-telegram-theme), which does the same for Telegram Desktop.
+Inspired by [omarchy-telegram-theme](https://github.com/gmickel/omarchy-telegram-theme), which does the same for Telegram Desktop. Siblings: [omarchy-whatsapp-theme](https://github.com/GruperTal/omarchy-whatsapp-theme), [omarchy-discord-theme](https://github.com/GruperTal/omarchy-discord-theme).
 
 ## Install
 
