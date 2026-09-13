@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Generate Slack CSS from the active Omarchy theme.
+
+The patched Slack app (see slack-asar-patch) watches OUT and re-injects it live.
+Slack paints everything from --dt_color-* / --sk_* custom properties, so overriding
+those is enough: palette ramps (which the sidebar theme resolves through) plus the
+semantic tokens.
+"""
+import os
+import sys
+import tomllib
+from pathlib import Path
+
+SRC = Path.home() / ".local/state/omarchy/current/theme/colors.toml"
+OUT = Path.home() / ".local/state/omarchy-slack-theme/slack.css"
+
+# Slack palette -> Omarchy colour, picked by the hue of Slack's own shade 50.
+# aubergine is Slack's brand/sidebar default, so it takes the accent.
+PALETTES = {
+    "tomato": "red", "paprika": "red", "rose": "red",
+    "tangerine": "orange", "campfire": "orange", "horchata": "orange",
+    "honeycomb": "yellow", "sunflower": "yellow",
+    "grass": "green", "cilantro": "green", "mojito": "green", "jade": "green",
+    "aquarium": "cyan", "lagoon": "cyan",
+    "ocean": "blue", "indigo": "blue",
+    "aubergine": "accent", "sangria": "magenta", "flamingo": "magenta",
+}
+SHADES = (0, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
+
+
+def rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def mix(a, b, t):
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def luminance(c):
+    ch = [v / 255 for v in c]
+    ch = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4 for v in ch]
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2]
+
+
+def contrast(a, b):
+    la, lb = sorted((luminance(a), luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def fit(c, against, toward, ratio=4.5):
+    """Move c toward `toward` just far enough to reach `ratio` contrast with `against`."""
+    for i in range(21):
+        out = mix(c, toward, i / 20)
+        if contrast(out, against) >= ratio:
+            return out
+    return toward
+
+
+def hx(c, alpha=None):
+    return "#%02x%02x%02x" % c + ("" if alpha is None else "%02x" % alpha)
+
+
+def ramp(stops, s):
+    for (s0, c0), (s1, c1) in zip(stops, stops[1:]):
+        if s <= s1:
+            return mix(c0, c1, (s - s0) / (s1 - s0))
+    return stops[-1][1]
+
+
+def build(t):
+    c = {k: rgb(v) for k, v in t.items() if isinstance(v, str) and v.startswith("#")}
+    bg, fg, muted = c["background"], c["foreground"], c["muted"]
+    dbg, lbg = c["dark_background"], c["lighter_background"]
+    darker_bg = c.get("darker_background", dbg)
+    bright_fg = c.get("bright_foreground", fg)
+    dfg = c.get("dark_foreground", fg)
+    c.setdefault("orange", mix(c["red"], c["yellow"], 0.5))
+    accent = c["accent"]
+    fg_hover, fg_pressed = hx(fg, 0x14), hx(fg, 0x2E)
+
+    v = {}  # token name (without --dt_color-) -> css value
+
+    # Palette ramps: shade 0 sits on the background side, 100 on the foreground side (both modes).
+    neutral = [(0, dbg), (5, bg), (20, lbg), (50, muted), (100, bright_fg)]
+    for s in SHADES:
+        v[f"plt-gray-{s}"] = "%d,%d,%d" % ramp(neutral, s)
+    for name, key in PALETTES.items():
+        col = c[key]
+        for s in SHADES:
+            v[f"plt-{name}-{s}"] = "%d,%d,%d" % ramp([(0, bg), (50, col), (100, bright_fg)], s)
+    for name in ("gray", *PALETTES):
+        v[f"plt-{name}-hover"], v[f"plt-{name}-pressed"] = fg_hover, fg_pressed
+
+    # Semantic tokens.
+    v.update({
+        "base-pry": hx(bg), "base-sec": hx(bg), "base-ter": hx(lbg),
+        "base-inv-pry": hx(lbg), "base-modal": hx(darker_bg, 0x99),
+        "ctr-pry": hx(lbg), "ctr-sec": hx(lbg),
+        "surf-pry": hx(fg, 0x0F), "surf-sec": hx(fg, 0x40), "surf-inv": hx(fg, 0x2E),
+        "surf-inv-hgl-3": hx(c["yellow"], 0x2E),
+        "content-pry": hx(fg), "content-sec": hx(fit(dfg, bg, fg)), "content-ter": hx(fit(muted, bg, fg)),
+        "content-inv-pry": hx(fg), "content-inv-sec": hx(fit(dfg, bg, fg)),
+        "otl-pry": hx(muted), "otl-sec": hx(muted, 0x80), "otl-ter": hx(muted, 0x4D),
+        "otl-inv-pry": hx(muted), "otl-inv-sec": hx(muted, 0x80), "otl-inv-ter": hx(muted, 0x4D),
+    })
+    roles = {"hgl-1": accent, "hgl-2": c["green"], "hgl-3": c["yellow"], "imp": c["red"], "education": c["magenta"]}
+    for role, col in roles.items():
+        text = hx(fit(col, bg, fg))
+        v[f"base-{role}"] = hx(mix(bg, col, 0.15))
+        v[f"base-inv-{role}"] = hx(fit(col, fg, bg))  # filled buttons carry content-inv-pry (fg) text
+        v[f"content-{role}"] = v[f"content-inv-{role}"] = text
+        v[f"surf-{role}"] = hx(col, 0x40)
+        v[f"otl-{role}"] = text
+        v[f"otl-{role}-sec"] = hx(col, 0x40)
+    for k in [k for k in v if k.split("-")[0] in ("base", "surf", "ctr")]:
+        v[f"{k}-hover"], v[f"{k}-pressed"] = fg_hover, fg_pressed
+
+    link = fit(accent, bg, fg)
+    solid = {"max": 0.7, "high": 0.46, "mid": 0.25, "low": 0.12, "soft": 0.05, "min": 0.04}
+    sk = {
+        "primary_foreground": fg, "primary_background": bg,
+        "inverted_foreground": bg, "inverted_background": fg,
+        "highlight": link, "highlight_hover": mix(link, fg, 0.25), "highlight_accent": link,
+        "secondary_highlight": c["yellow"],
+        **{f"foreground_{k}": fg for k in solid},
+        **{f"foreground_{k}_solid": mix(bg, fg, x) for k, x in solid.items()},
+    }
+
+    decls = [f"  color-scheme: {t.get('mode', 'dark')} !important;"]
+    decls += [f"  --dt_color-{k}: {val} !important;" for k, val in v.items()]
+    decls += [f"  --sk_{k}: %d, %d, %d !important;" % val for k, val in sk.items()]
+    sel = ":root, body, .sk-client-theme--dark, .sk-client-theme--light, .sk-client-theme--light-inverted-sidebar"
+    return f"/* Generated by omarchy-slack-theme. */\n{sel} {{\n" + "\n".join(decls) + "\n}\n"
+
+
+def main():
+    with open(SRC, "rb") as f:
+        css = build(tomllib.load(f))
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    tmp = OUT.with_suffix(".tmp")
+    tmp.write_text(css)
+    os.replace(tmp, OUT)  # atomic, so Slack never reads a half-written file
+
+
+if __name__ == "__main__":
+    sys.exit(main())

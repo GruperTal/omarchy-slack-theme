@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Append a CSS loader to Slack's main-process boot bundle inside app.asar.
+
+Idempotent. Needs root for the system Slack; a pacman hook re-runs it after Slack updates.
+Works because Slack's Linux build ships with the asar integrity fuse disabled.
+Undo: cp app.asar.orig app.asar
+"""
+import hashlib
+import json
+import os
+import shutil
+import struct
+import sys
+
+ASAR = sys.argv[1] if len(sys.argv) > 1 else "/usr/lib/slack/resources/app.asar"
+MARK = b"/* omarchy-slack-theme */"
+LOADER = MARK + b"""
+;(() => {
+  const { app, webContents } = require("electron");
+  const fs = require("fs");
+  const css = require("path").join(require("os").homedir(), ".local/state/omarchy-slack-theme/slack.css");
+  const keys = new WeakMap();
+  const apply = async (wc) => {
+    try {
+      if (wc.isDestroyed()) return;
+      const key = await wc.insertCSS(fs.readFileSync(css, "utf8"), { cssOrigin: "user" });
+      const old = keys.get(wc);
+      keys.set(wc, key);
+      if (old) await wc.removeInsertedCSS(old);
+    } catch {}
+  };
+  app.on("web-contents-created", (_, wc) => wc.on("dom-ready", () => { keys.delete(wc); apply(wc); }));
+  fs.watchFile(css, { interval: 1000 }, () => webContents.getAllWebContents().forEach(apply));
+})();
+"""
+
+
+def sha256(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def main():
+    with open(ASAR, "rb") as f:
+        buf = f.read()
+    # asar = pickle(uint32 header size) + pickle(json header) + file data; offsets are relative to data.
+    header_size = struct.unpack_from("<I", buf, 4)[0]
+    json_len = struct.unpack_from("<I", buf, 12)[0]
+    header = json.loads(buf[16:16 + json_len])
+    data = bytearray(buf[8 + header_size:])
+
+    entry = header["files"]["dist"]["files"]["boot.bundle.cjs"]
+    start = int(entry["offset"])
+    src = bytes(data[start:start + entry["size"]])
+    if MARK in src:
+        print("Slack already patched")
+        return
+
+    # ponytail: old bytes stay as dead space in the archive; harmless, and upgrades replace the file anyway.
+    new = src + b"\n" + LOADER
+    block = entry["integrity"]["blockSize"]
+    entry["offset"], entry["size"] = str(len(data)), len(new)
+    entry["integrity"]["hash"] = sha256(new)
+    entry["integrity"]["blocks"] = [sha256(new[i:i + block]) for i in range(0, len(new), block)]
+    data += new
+
+    js = json.dumps(header, separators=(",", ":")).encode()
+    pad = -len(js) % 4
+    pickle = struct.pack("<II", 4 + len(js) + pad, len(js)) + js + b"\0" * pad
+
+    shutil.copy2(ASAR, ASAR + ".orig")
+    tmp = ASAR + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(struct.pack("<II", 4, len(pickle)) + pickle + data)
+    shutil.copymode(ASAR, tmp)
+    os.replace(tmp, ASAR)
+    print("Slack patched. Fully quit Slack (closing the window only hides it to the tray) and start it again.")
+
+
+if __name__ == "__main__":
+    main()
