@@ -20,7 +20,7 @@ For best results set Slack → Preferences → Appearance to the same mode (dark
 
 Slack has no theme files, but its whole UI is painted from CSS custom properties (`--dt_color-*`, `--sk_*`).
 
-- **`omarchy-slack-theme`** reads `~/.local/state/omarchy/current/theme/colors.toml` and writes `~/.local/state/omarchy-slack-theme/slack.css`. It overrides Slack's palette ramps (which the sidebar theme resolves through) and its semantic tokens. Text and button colours that would be unreadable are nudged until they reach 4.5:1 contrast.
+- **`omarchy-slack-theme`** reads the active theme's palette through Omarchy's own `omarchy-theme-color` (so third-party themes that only define `color0`–`color15` or short names like `bg`/`fg` work too) and writes `~/.local/state/omarchy-slack-theme/slack.css`. It overrides Slack's palette ramps (which the sidebar theme resolves through) and its semantic tokens. Text and button colours that would be unreadable are nudged until they reach 4.5:1 contrast.
 - **`slack-asar-patch`** appends a small loader to Slack's main-process bundle inside `app.asar`. The loader injects that CSS into Slack and re-injects it whenever the file changes. This works because Slack's Linux build ships with Electron's asar integrity check disabled. The original is kept as `app.asar.orig`.
 - **`install.sh`** installs the generator to `~/.local/bin`, adds an Omarchy `theme-set.d` hook that regenerates the CSS on every theme switch, and adds a pacman hook that re-applies the patch after Slack updates.
 
